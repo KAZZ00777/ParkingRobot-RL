@@ -70,27 +70,34 @@ public class ParkingAgent : Agent
 
     public override void CollectObservations(VectorSensor sensor)
     {
-        // 1. RaycastSensor.cs の distances[8] を観測に入れる
+        /*
+         * RaycastSensor.cs の distances の順番
+         * 0: Front
+         * 1: Right
+         * 2: Left
+         * 3: Back
+         * 4: FrontRight
+         * 5: FrontLeft
+         * 6: BackRight
+         * 7: BackLeft
+         */
+
         if (raycastSensor != null && raycastSensor.distances != null)
         {
             for (int i = 0; i < raycastSensor.distances.Length; i++)
             {
-                // distances は 0〜sensorLength の生距離なので、0〜1に正規化して渡す
                 float normalizedDistance = raycastSensor.distances[i] / raycastSensor.sensorLength;
-
                 sensor.AddObservation(normalizedDistance);
             }
         }
         else
         {
-            // センサがない場合は「全部遠い」として扱う
             for (int i = 0; i < 8; i++)
             {
                 sensor.AddObservation(1.0f);
             }
         }
 
-        // 2. 駐車目標との相対位置
         if (parkingTarget != null)
         {
             Vector3 localTarget = transform.InverseTransformPoint(parkingTarget.position);
@@ -98,7 +105,6 @@ public class ParkingAgent : Agent
             sensor.AddObservation(localTarget.x / 10f);
             sensor.AddObservation(localTarget.z / 10f);
 
-            // 3. 駐車目標との角度差
             float angleDiff = Vector3.SignedAngle(
                 transform.forward,
                 parkingTarget.forward,
@@ -114,7 +120,6 @@ public class ParkingAgent : Agent
             sensor.AddObservation(0f);
         }
 
-        // 4. 車の速度と回転速度
         if (carRb != null)
         {
             Vector3 localVelocity = transform.InverseTransformDirection(carRb.velocity);
@@ -180,19 +185,15 @@ public class ParkingAgent : Agent
 
         float speed = carRb.velocity.magnitude;
 
-        // 目標に近づいたら報酬、遠ざかったら罰
         float improvement = previousDistance - currentDistance;
         AddReward(improvement * 0.5f);
         previousDistance = currentDistance;
 
-        // 何もし続ける行動を避けるための時間罰
         AddReward(-0.001f);
 
-        // 駐車目標の向きに近いほど少し報酬
         float angleReward = 1f - (angleDiff / 180f);
         AddReward(angleReward * 0.001f);
 
-        // 成功条件
         bool isCloseEnough = currentDistance < successDistance;
         bool isAngleGood = angleDiff < successAngle;
         bool isSlowEnough = speed < successSpeed;
@@ -203,7 +204,6 @@ public class ParkingAgent : Agent
             EndEpisode();
         }
 
-        // 目標から離れすぎたら失敗
         if (currentDistance > maxDistanceFromTarget)
         {
             AddReward(-1f);
