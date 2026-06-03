@@ -1,4 +1,5 @@
 using UnityEngine;
+using UnityEngine.InputSystem;
 using Unity.MLAgents;
 using Unity.MLAgents.Actuators;
 using Unity.MLAgents.Sensors;
@@ -47,7 +48,7 @@ public class ParkingAgent : Agent
     {
         if (carRb != null)
         {
-            carRb.linearVelocity = Vector3.zero;
+            carRb.velocity = Vector3.zero;
             carRb.angularVelocity = Vector3.zero;
         }
 
@@ -69,35 +70,41 @@ public class ParkingAgent : Agent
 
     public override void CollectObservations(VectorSensor sensor)
     {
-        // 1. 距離センサ8個
-        if (raycastSensor != null)
+        // 1. RaycastSensor.cs の distances[8] を観測に入れる
+        if (raycastSensor != null && raycastSensor.distances != null)
         {
-            raycastSensor.CastSensors();
-
-            float[] distances = raycastSensor.GetAllNormalizedDistances();
-
-            for (int i = 0; i < distances.Length; i++)
+            for (int i = 0; i < raycastSensor.distances.Length; i++)
             {
-                sensor.AddObservation(distances[i]);
+                // distances は 0〜sensorLength の生距離なので、0〜1に正規化して渡す
+                float normalizedDistance = raycastSensor.distances[i] / raycastSensor.sensorLength;
+
+                sensor.AddObservation(normalizedDistance);
             }
         }
         else
         {
+            // センサがない場合は「全部遠い」として扱う
             for (int i = 0; i < 8; i++)
             {
                 sensor.AddObservation(1.0f);
             }
         }
 
-        // 2. 目標駐車位置との相対位置 x, z
+        // 2. 駐車目標との相対位置
         if (parkingTarget != null)
         {
             Vector3 localTarget = transform.InverseTransformPoint(parkingTarget.position);
+
             sensor.AddObservation(localTarget.x / 10f);
             sensor.AddObservation(localTarget.z / 10f);
 
-            // 3. 目標向きとの角度差
-            float angleDiff = Vector3.SignedAngle(transform.forward, parkingTarget.forward, Vector3.up);
+            // 3. 駐車目標との角度差
+            float angleDiff = Vector3.SignedAngle(
+                transform.forward,
+                parkingTarget.forward,
+                Vector3.up
+            );
+
             sensor.AddObservation(angleDiff / 180f);
         }
         else
@@ -107,14 +114,14 @@ public class ParkingAgent : Agent
             sensor.AddObservation(0f);
         }
 
-        // 4. 車のローカル速度 x, z
+        // 4. 車の速度と回転速度
         if (carRb != null)
         {
-            Vector3 localVelocity = transform.InverseTransformDirection(carRb.linearVelocity);
+            Vector3 localVelocity = transform.InverseTransformDirection(carRb.velocity);
+
             sensor.AddObservation(localVelocity.x / maxSpeed);
             sensor.AddObservation(localVelocity.z / maxSpeed);
 
-            // 5. 車の回転速度 y
             sensor.AddObservation(carRb.angularVelocity.y / 10f);
         }
         else
@@ -141,13 +148,13 @@ public class ParkingAgent : Agent
             return;
         }
 
-        if (carRb.linearVelocity.magnitude < maxSpeed)
+        if (carRb.velocity.magnitude < maxSpeed)
         {
             Vector3 force = transform.forward * throttle * motorForce;
             carRb.AddForce(force, ForceMode.Acceleration);
         }
 
-        float speedRate = Mathf.Clamp01(carRb.linearVelocity.magnitude / maxSpeed);
+        float speedRate = Mathf.Clamp01(carRb.velocity.magnitude / maxSpeed);
 
         Vector3 torque = Vector3.up * steer * steerForce * speedRate;
         carRb.AddTorque(torque, ForceMode.Acceleration);
@@ -162,18 +169,26 @@ public class ParkingAgent : Agent
         }
 
         float currentDistance = Vector3.Distance(transform.position, parkingTarget.position);
-        float angleDiff = Mathf.Abs(Vector3.SignedAngle(transform.forward, parkingTarget.forward, Vector3.up));
-        float speed = carRb.linearVelocity.magnitude;
+
+        float angleDiff = Mathf.Abs(
+            Vector3.SignedAngle(
+                transform.forward,
+                parkingTarget.forward,
+                Vector3.up
+            )
+        );
+
+        float speed = carRb.velocity.magnitude;
 
         // 目標に近づいたら報酬、遠ざかったら罰
         float improvement = previousDistance - currentDistance;
         AddReward(improvement * 0.5f);
         previousDistance = currentDistance;
 
-        // 毎ステップ少し罰。無駄な行動を減らす
+        // 何もし続ける行動を避けるための時間罰
         AddReward(-0.001f);
 
-        // 目標方向に向いているほど少し報酬
+        // 駐車目標の向きに近いほど少し報酬
         float angleReward = 1f - (angleDiff / 180f);
         AddReward(angleReward * 0.001f);
 
@@ -188,7 +203,7 @@ public class ParkingAgent : Agent
             EndEpisode();
         }
 
-        // 遠くに行きすぎたら失敗
+        // 目標から離れすぎたら失敗
         if (currentDistance > maxDistanceFromTarget)
         {
             AddReward(-1f);
@@ -210,7 +225,31 @@ public class ParkingAgent : Agent
     {
         ActionSegment<float> actions = actionsOut.ContinuousActions;
 
-        actions[0] = Input.GetAxis("Horizontal"); // A/D または ←/→
-        actions[1] = Input.GetAxis("Vertical");   // W/S または ↑/↓
+        float steer = 0f;
+        float throttle = 0f;
+
+        if (Keyboard.current != null)
+        {
+            if (Keyboard.current.aKey.isPressed || Keyboard.current.leftArrowKey.isPressed)
+            {
+                steer = -1f;
+            }
+            else if (Keyboard.current.dKey.isPressed || Keyboard.current.rightArrowKey.isPressed)
+            {
+                steer = 1f;
+            }
+
+            if (Keyboard.current.wKey.isPressed || Keyboard.current.upArrowKey.isPressed)
+            {
+                throttle = 1f;
+            }
+            else if (Keyboard.current.sKey.isPressed || Keyboard.current.downArrowKey.isPressed)
+            {
+                throttle = -1f;
+            }
+        }
+
+        actions[0] = steer;
+        actions[1] = throttle;
     }
 }
